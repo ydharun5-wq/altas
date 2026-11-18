@@ -1,0 +1,6 @@
+[project]
+name = "atlas"
+version = "0.1.0"
+description = "NSE cash-equity research and paper-trading project foundation."
+requires-python = ">=3.12"
+dependencies = []
