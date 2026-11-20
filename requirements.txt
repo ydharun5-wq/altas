@@ -1,1 +1,2 @@
-# Core project and tests use Python 3.12 standard-library modules only.
+# Install the application and its runtime dependencies with: pip install -e .
+-e .

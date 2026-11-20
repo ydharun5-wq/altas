@@ -6,6 +6,7 @@ import csv
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 
@@ -60,8 +61,8 @@ def read_ohlcv_csv(path: str | Path) -> list[OHLCVBar]:
                 high = float(row["high"])
                 low = float(row["low"])
                 close = float(row["close"])
-                raw_volume = float(row["volume"])
-            except (ValueError, OverflowError) as exc:
+                raw_volume = Decimal(row["volume"].strip())
+            except (InvalidOperation, ValueError, OverflowError) as exc:
                 raise DataValidationError(f"Line {line_number}: invalid timestamp or numeric value") from exc
 
             prices = (open_price, high, low, close)
@@ -69,7 +70,11 @@ def read_ohlcv_csv(path: str | Path) -> list[OHLCVBar]:
                 raise DataValidationError(f"Line {line_number}: symbol must not be empty")
             if not all(math.isfinite(value) and value > 0 for value in prices):
                 raise DataValidationError(f"Line {line_number}: prices must be finite and positive")
-            if not math.isfinite(raw_volume) or raw_volume < 0 or not raw_volume.is_integer():
+            if (
+                not raw_volume.is_finite()
+                or raw_volume < 0
+                or raw_volume != raw_volume.to_integral_value()
+            ):
                 raise DataValidationError(f"Line {line_number}: volume must be a non-negative integer")
             if high < max(open_price, low, close) or low > min(open_price, high, close):
                 raise DataValidationError(f"Line {line_number}: inconsistent OHLC prices")

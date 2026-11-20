@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: ${ATLAS_DB_PASSWORD:?Set ATLAS_DB_PASSWORD in .env}
+    volumes:
+      - atlas-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    environment:
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:${ATLAS_DB_PASSWORD}@db:5432/atlas
+      ATLAS_ENVIRONMENT: development
+      ATLAS_COOKIE_SECURE: ${ATLAS_COOKIE_SECURE:-false}
+      ATLAS_BOOTSTRAP_TOKEN: ${ATLAS_BOOTSTRAP_TOKEN:?Set ATLAS_BOOTSTRAP_TOKEN in .env}
+      ATLAS_ALLOWED_ORIGINS: '["http://localhost:8080","http://127.0.0.1:8080","http://localhost:5173","http://127.0.0.1:5173"]'
+      ATLAS_MARKET_DATA_DIR: ${ATLAS_MARKET_DATA_DIR:-/data}
+      ATLAS_MARKET_DATA_SOURCE: ${ATLAS_MARKET_DATA_SOURCE:-}
+      ATLAS_MARKET_DATA_IS_SYNTHETIC: ${ATLAS_MARKET_DATA_IS_SYNTHETIC:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    volumes:
+      - ./data:/data:ro
+    restart: unless-stopped
+
+  ui:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  atlas-postgres:

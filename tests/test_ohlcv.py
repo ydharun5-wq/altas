@@ -67,6 +67,26 @@ class OHLCVReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(DataValidationError, "non-negative integer"):
                 read_ohlcv_csv(path)
 
+    def test_volume_keeps_large_integer_precision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_csv(
+                directory,
+                "2026-01-05 09:15:00,RELIANCE,10,12,8,11,9007199254740993",
+            )
+
+            bars = read_ohlcv_csv(path)
+
+        self.assertEqual(bars[0].volume, 9007199254740993)
+
+    def test_rejects_fractional_volume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_csv(
+                directory, "2026-01-05 09:15:00,RELIANCE,10,12,8,11,1.5"
+            )
+
+            with self.assertRaisesRegex(DataValidationError, "non-negative integer"):
+                read_ohlcv_csv(path)
+
     def test_rejects_non_increasing_timestamps(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "out_of_order.csv"
