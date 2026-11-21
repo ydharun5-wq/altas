@@ -1,7 +1,8 @@
 FROM node:22.14-alpine AS build
 WORKDIR /ui
 COPY package.json ./
-RUN npm install
+COPY package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 

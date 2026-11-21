@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from hashlib import sha256
 import hmac
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -20,6 +19,7 @@ from atlas.web.security import (
     current_auth,
     ensure_login_allowed,
     hash_password,
+    login_limit_keys,
     new_session,
     record_login_failure,
     require_csrf,
@@ -93,14 +93,14 @@ def login(
 ) -> SessionResponse:
     require_origin(request, settings)
     ip = request.client.host if request.client else "unknown"
-    key = sha256(f"{ip}\0{payload.username}".encode("utf-8")).hexdigest()
-    ensure_login_allowed(db, key, settings)
+    keys = login_limit_keys(ip)
+    ensure_login_allowed(db, keys, settings)
     user = db.scalar(select(User).where(User.username == payload.username))
     valid = verify_password(payload.password.get_secret_value(), user.password_hash if user else None)
     if not user or not valid:
-        record_login_failure(db, key, settings)
+        record_login_failure(db, keys, settings)
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    clear_login_failures(db, key)
+    clear_login_failures(db, keys)
     raw, csrf, session = new_session(db, user, settings)
     db.add(AuditEvent(actor_user_id=user.id, action="auth.login", resource_type="session"))
     db.commit()

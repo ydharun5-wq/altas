@@ -14,6 +14,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if inspector.has_table("login_attempts"):
+        indexes = {item["name"] for item in inspector.get_indexes("login_attempts")}
+        if "ix_login_attempts_updated" not in indexes:
+            op.create_index("ix_login_attempts_updated", "login_attempts", ["updated_at"], unique=False)
+        return
     op.create_table(
         "login_attempts",
         sa.Column("key_hash", sa.String(length=64), nullable=False),

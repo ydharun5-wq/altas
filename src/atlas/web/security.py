@@ -10,7 +10,9 @@ import secrets
 
 from fastapi import Depends, HTTPException, Request, status
 from pwdlib import PasswordHash
-from sqlalchemy import select
+from sqlalchemy import case, delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from atlas.web.config import Settings
@@ -92,38 +94,65 @@ def require_csrf(
     return auth
 
 
-def ensure_login_allowed(db: Session, key: str, settings: Settings) -> None:
+def login_limit_keys(ip: str) -> tuple[str, str]:
+    account_key = token_digest("owner-account")
+    ip_key = token_digest(f"source-ip\0{ip}")
+    return account_key, ip_key
+
+
+def ensure_login_allowed(db: Session, keys: tuple[str, str], settings: Settings) -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.login_window_seconds)
-    attempt = db.get(LoginAttempt, key)
-    if attempt is None:
-        return
-    if _utc(attempt.updated_at) <= cutoff:
+    expired = db.scalars(
+        select(LoginAttempt).where(
+            LoginAttempt.key_hash.in_(keys),
+            LoginAttempt.updated_at <= cutoff,
+        )
+    ).all()
+    for attempt in expired:
         db.delete(attempt)
-        db.commit()
-        return
-    if attempt.failure_count >= settings.login_max_failures:
+    db.commit()
+    attempts = db.scalars(
+        select(LoginAttempt).where(LoginAttempt.key_hash.in_(keys))
+    ).all()
+    if any(attempt.failure_count >= settings.login_max_failures for attempt in attempts):
         raise HTTPException(status_code=429, detail="Too many failed login attempts")
 
 
-def record_login_failure(db: Session, key: str, settings: Settings) -> None:
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.login_window_seconds)
-    attempt = db.get(LoginAttempt, key)
-    if attempt is None or _utc(attempt.updated_at) <= cutoff:
-        if attempt is not None:
-            db.delete(attempt)
-        db.flush()
-        attempt = LoginAttempt(key_hash=key, failure_count=1)
-        db.add(attempt)
-    else:
-        attempt.failure_count += 1
+def record_login_failure(db: Session, keys: tuple[str, str], settings: Settings) -> None:
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=settings.login_window_seconds)
+    dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
+    insert = pg_insert if dialect == "postgresql" else sqlite_insert
+    counts: list[int] = []
+    for key in keys:
+        statement = insert(LoginAttempt).values(
+            key_hash=key,
+            failure_count=1,
+            updated_at=now,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[LoginAttempt.key_hash],
+            set_={
+                "failure_count": case(
+                    (
+                        LoginAttempt.updated_at <= cutoff,
+                        1,
+                    ),
+                    else_=LoginAttempt.failure_count + 1,
+                ),
+                "updated_at": now,
+            },
+        ).returning(LoginAttempt.failure_count)
+        count = db.scalar(statement)
+        counts.append(count or 1)
     db.commit()
+    if any(count > settings.login_max_failures for count in counts):
+        raise HTTPException(status_code=429, detail="Too many failed login attempts")
 
 
-def clear_login_failures(db: Session, key: str) -> None:
-    attempt = db.get(LoginAttempt, key)
-    if attempt is not None:
-        db.delete(attempt)
-        db.commit()
+def clear_login_failures(db: Session, keys: tuple[str, str]) -> None:
+    db.execute(delete(LoginAttempt).where(LoginAttempt.key_hash.in_(keys)))
+    db.commit()
 
 
 def verify_password(password: str, encoded: str | None) -> bool:

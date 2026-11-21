@@ -4,9 +4,11 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from sqlalchemy import select
+from fastapi import HTTPException
 
 from fastapi.testclient import TestClient
 
@@ -15,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from atlas.web.app import create_app
 from atlas.web.config import Settings
 from atlas.web.database import Base
-from atlas.web.models import PaperOrder, Position
+from atlas.web.models import LoginAttempt, PaperOrder, Position
+from atlas.web.security import login_limit_keys, record_login_failure
 
 
 class WebApplicationSecurityTests(unittest.TestCase):
@@ -202,6 +205,45 @@ class WebApplicationSecurityTests(unittest.TestCase):
             self.assertEqual(response.status_code, 401)
         blocked = self.client.post("/auth/login", headers={"Origin": "http://testserver"}, json=body)
         self.assertEqual(blocked.status_code, 429)
+
+    def test_login_limit_cannot_be_reset_by_username_or_forwarded_ip(self):
+        self.assertEqual(self._bootstrap().status_code, 201)
+        self.client.post("/auth/logout", headers={"Origin": "http://testserver", "X-CSRF-Token": self.client.cookies["atlas_csrf"]})
+        for username in ("owner", "another-name", "owner"):
+            response = self.client.post(
+                "/auth/login",
+                headers={
+                    "Origin": "http://testserver",
+                    "X-Forwarded-For": f"192.0.2.{len(username)}",
+                },
+                json={"username": username, "password": "incorrect-password"},
+            )
+            if response.status_code == 429:
+                break
+            self.assertIn(response.status_code, (401, 429))
+        self.assertEqual(response.status_code, 429)
+
+    def test_database_limiter_records_concurrent_failures(self):
+        self.assertEqual(self._bootstrap().status_code, 201)
+        keys = login_limit_keys("test-source")
+
+        def fail_once(_):
+            with self.app.state.session_factory() as db:
+                try:
+                    record_login_failure(db, keys, self.settings)
+                    return "recorded"
+                except HTTPException as exc:
+                    return str(exc.status_code)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(fail_once, range(12)))
+        self.assertIn("429", results)
+        with self.app.state.session_factory() as db:
+            counts = [
+                db.get(LoginAttempt, key).failure_count
+                for key in keys
+            ]
+        self.assertTrue(all(count >= 12 for count in counts))
 
 
 if __name__ == "__main__":
